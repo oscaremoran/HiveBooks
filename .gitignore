@@ -1,0 +1,9 @@
+# Local GitHub-storage config — never commit tokens
+config.js
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
