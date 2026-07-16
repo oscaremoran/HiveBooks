@@ -41,6 +41,17 @@ const HiveStorage = (() => {
     return res.json();
   }
 
+  /** call(), but a dead/unreachable Sheet becomes a message the UI can show
+      instead of an exception that silently kills the click handler. */
+  async function safeCall(action, payload = {}) {
+    try {
+      return await call(action, payload);
+    } catch (err) {
+      console.warn("HiveBooks: Sheet unreachable —", err.message);
+      return { ok: false, msg: "Can't reach the hive right now. Try again in a moment." };
+    }
+  }
+
   /* ---------------------- local mode ---------------------- */
   const localAccounts = () => {
     try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch { return {}; }
@@ -71,7 +82,7 @@ const HiveStorage = (() => {
 
   async function signup(username, passHash) {
     if (usingSheet()) {
-      const r = await call("signup", { username, passHash });
+      const r = await safeCall("signup", { username, passHash });
       if (r.ok) { session = { username, passHash, data: r.data }; await refreshScores(); }
       return r;
     }
@@ -86,7 +97,7 @@ const HiveStorage = (() => {
 
   async function login(username, passHash) {
     if (usingSheet()) {
-      const r = await call("login", { username, passHash });
+      const r = await safeCall("login", { username, passHash });
       if (r.ok) { session = { username, passHash, data: r.data }; await refreshScores(); }
       return r;
     }
@@ -101,7 +112,7 @@ const HiveStorage = (() => {
 
   async function rename(newUsername, passHash) {
     if (usingSheet()) {
-      const r = await call("rename", { username: session.username, passHash, newUsername });
+      const r = await safeCall("rename", { username: session.username, passHash, newUsername });
       if (r.ok) session.username = newUsername;
       return r;
     }
@@ -118,7 +129,7 @@ const HiveStorage = (() => {
 
   async function changePass(passHash, newPassHash) {
     if (usingSheet()) {
-      const r = await call("changePass", { username: session.username, passHash, newPassHash });
+      const r = await safeCall("changePass", { username: session.username, passHash, newPassHash });
       if (r.ok) session.passHash = newPassHash;
       return r;
     }
@@ -133,7 +144,7 @@ const HiveStorage = (() => {
 
   async function remove(passHash) {
     if (usingSheet()) {
-      const r = await call("remove", { username: session.username, passHash });
+      const r = await safeCall("remove", { username: session.username, passHash });
       if (r.ok) session = null;
       return r;
     }

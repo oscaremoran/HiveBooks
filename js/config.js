@@ -12,5 +12,7 @@
    ============================================================ */
 
 window.HIVE_CONFIG = {
-  apiUrl: "https://script.google.com/macros/s/AKfycbxBrxNebyylbOCqkdrvnbDbcCK4bxhJkvvy7gxJWBNN46UjV7XU4SA2MRCeM2LOw9TZkA/exec",
+  // Empty = local mode (accounts saved in this browser only).
+  // The old Apps Script URL was removed: its Google Sheet was deleted.
+  apiUrl: "",
 };
