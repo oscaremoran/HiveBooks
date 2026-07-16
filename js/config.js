@@ -12,5 +12,9 @@
    ============================================================ */
 
 window.HIVE_CONFIG = {
-  apiUrl: "https://script.google.com/macros/s/AKfycbxBrxNebyylbOCqkdrvnbDbcCK4bxhJkvvy7gxJWBNN46UjV7XU4SA2MRCeM2LOw9TZkA/exec",
+  // Empty = local mode: accounts and ratings save in this browser only.
+  // The old Apps Script backend is gone — its Google Sheet was deleted,
+  // and a sheet-bound script dies with its sheet. A replacement that
+  // shares ratings is still to be chosen.
+  apiUrl: "",
 };
