@@ -1,9 +1,11 @@
-# Local GitHub-storage config — never commit tokens
-config.js
-
 # macOS
 .DS_Store
 
 # Editor
 .vscode/
 .idea/
+
+# Never commit secrets. js/config.js only holds the Apps Script Web App URL,
+# which is not a secret, so it IS committed on purpose.
+*.token
+secrets.json

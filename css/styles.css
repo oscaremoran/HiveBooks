@@ -215,6 +215,9 @@ form input:focus { outline: none; border-color: var(--honey); }
 }
 .tree-cap span { display: block; font-size: 0.66rem; color: #9a8a68; letter-spacing: 0.4px; }
 .tree-col { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+/* Levels with more than 7 books split into two stacks, side by side */
+.tree-col.split { flex-direction: row; align-items: flex-start; gap: 10px; }
+.tree-subcol { display: flex; flex-direction: column; align-items: center; gap: 10px; }
 
 .tree-hex {
   position: relative;

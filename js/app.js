@@ -4,7 +4,7 @@
    the 8-hexagon honeycomb and each destination.
    ============================================================ */
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   spawnBees();
   initAuthForm();
   buildHoneycomb();
@@ -16,7 +16,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // If a session already exists (e.g. reload), skip straight to home.
-  if (HiveAuth.currentUser()) enterApp();
+  if (await HiveAuth.restore()) enterApp();
   else showView("auth");
 });
 
@@ -149,6 +149,25 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 /** Re-centres the current level column on resize; set by initLevelStepper. */
 let recentreLevel = null;
 
+/** A level taller than this splits into two stacks side by side. */
+const MAX_COL_HEIGHT = 7;
+
+/** Build one book hexagon for the skill tree. */
+function makeHex(b) {
+  const hex = document.createElement("button");
+  hex.className = "tree-hex";
+  hex.dataset.book = b.id;
+  if (HiveAuth.isFinished(b.id)) hex.classList.add("done");
+  if (HiveAuth.isWanted(b.id)) hex.classList.add("want");
+  hex.innerHTML = `<span class="th-inner"><span class="th-title">${b.shortTitle}</span></span>`;
+  hex.addEventListener("click", () => openBookModal(b));
+  hex.addEventListener("mouseenter", () => highlightConnections(b.id, true, hex));
+  hex.addEventListener("mouseleave", () => highlightConnections(b.id, false, hex));
+  hex.addEventListener("focus", () => highlightConnections(b.id, true, hex));
+  hex.addEventListener("blur", () => highlightConnections(b.id, false, hex));
+  return hex;
+}
+
 function renderHoneycombBooks(body) {
   heading(body, "🍯 The Honeycomb",
     "Climb the hive! Each hexagon is a book. Levels run left to right, easiest to hardest; lines link a book to ones its fans will enjoy at the next level. Tap a book for details.");
@@ -190,22 +209,24 @@ function renderHoneycombBooks(body) {
     const meta = LEVEL_META[level];
     block.innerHTML = `<div class="tree-cap">${meta.name}<span>${meta.ages}</span></div>`;
 
+    const books = SAMPLE_BOOKS.filter((b) => b.level === level);
     const row = document.createElement("div");
     row.className = "tree-col";
-    SAMPLE_BOOKS.filter((b) => b.level === level).forEach((b) => {
-      const hex = document.createElement("button");
-      hex.className = "tree-hex";
-      hex.dataset.book = b.id;
-      if (HiveAuth.isFinished(b.id)) hex.classList.add("done");
-      if (HiveAuth.isWanted(b.id)) hex.classList.add("want");
-      hex.innerHTML = `<span class="th-inner"><span class="th-title">${b.shortTitle}</span></span>`;
-      hex.addEventListener("click", () => openBookModal(b));
-      hex.addEventListener("mouseenter", () => highlightConnections(b.id, true, hex));
-      hex.addEventListener("mouseleave", () => highlightConnections(b.id, false, hex));
-      hex.addEventListener("focus", () => highlightConnections(b.id, true, hex));
-      hex.addEventListener("blur", () => highlightConnections(b.id, false, hex));
-      row.appendChild(hex);
-    });
+
+    if (books.length > MAX_COL_HEIGHT) {
+      // Too tall for one stack — split into two side-by-side stacks,
+      // still inside this level.
+      row.classList.add("split");
+      const half = Math.ceil(books.length / 2);
+      const left = document.createElement("div");
+      const right = document.createElement("div");
+      left.className = right.className = "tree-subcol";
+      books.forEach((b, i) => (i < half ? left : right).appendChild(makeHex(b)));
+      row.append(left, right);
+    } else {
+      books.forEach((b) => row.appendChild(makeHex(b)));
+    }
+
     block.appendChild(row);
     tree.appendChild(block);
   });
@@ -349,14 +370,12 @@ function highlightConnections(id, on, hexEl) {
   tip.style.top = hexRect.bottom - treeRect.top + 10 + "px";
 }
 
-/** HiveScore from real reader ratings only (no seeded/fake scores). */
+/** HiveScore from real reader ratings only (no seeded/fake scores).
+    In sheet mode these totals come from every HiveBooks reader. */
 function hiveScore(book) {
-  let total = 0, count = 0;
-  Object.values(HiveStorage.getAccounts()).forEach((acc) => {
-    const r = acc.ratings && acc.ratings[book.id];
-    if (r != null) { total += r; count += 1; }
-  });
-  return { score: count ? total / count : null, count };
+  const s = HiveStorage.getScores()[book.id];
+  if (!s || !s.count) return { score: null, count: 0 };
+  return { score: s.sum / s.count, count: s.count };
 }
 
 /** Text for a HiveScore result. */
@@ -635,10 +654,58 @@ function renderProfile(body) {
 }
 
 function renderSettings(body) {
-  heading(body, "⚙️ Settings", "Preferences will live here.");
+  heading(body, "⚙️ Settings", "Where HiveBooks keeps its data.");
+
+  const onSheet = HiveStorage.usingSheet();
+  const localCount = HiveStorage.localAccountCount();
+
   const card = document.createElement("div"); card.className = "info-card";
-  card.innerHTML = `<p>Nothing to configure yet — coming soon. 🐝</p>`;
+  card.innerHTML = `
+    <p><strong>Storage:</strong> ${onSheet
+      ? "🍯 Shared Google Sheet — accounts and HiveScores are shared by everyone."
+      : "💻 This browser only — accounts and HiveScores stay on this computer."}</p>
+    <p style="margin-top:8px;"><strong>Accounts saved in this browser:</strong> ${localCount}</p>`;
   body.appendChild(card);
+
+  if (!onSheet) {
+    const note = document.createElement("div"); note.className = "info-card";
+    note.innerHTML = `<p>To share accounts between people, add your Google Apps Script
+      Web App URL to <code>js/config.js</code>. See README.md for the steps. 🐝</p>`;
+    body.appendChild(note);
+    return;
+  }
+
+  // Sheet mode: offer to move this browser's old accounts into the Sheet.
+  const mig = document.createElement("div"); mig.className = "info-card";
+  mig.innerHTML = `
+    <p class="danger-title" style="color:var(--amber);">Move browser accounts into the Sheet</p>
+    <p class="danger-note">Copies the ${localCount} account${localCount === 1 ? "" : "s"}
+      saved in this browser into the shared Sheet. Usernames already in the Sheet are
+      skipped, never overwritten. Your browser copies are kept as a backup.</p>
+    <p class="form-msg" id="migMsg"></p>
+    <button class="btn-primary" id="migBtn" ${localCount ? "" : "disabled"}>
+      ${localCount ? "Move them into the Sheet" : "Nothing to move"}
+    </button>`;
+  body.appendChild(mig);
+
+  const btn = document.getElementById("migBtn");
+  if (!localCount) return;
+  btn.addEventListener("click", async () => {
+    const msg = document.getElementById("migMsg");
+    btn.disabled = true;
+    msg.textContent = "Moving…";
+    msg.className = "form-msg";
+    const r = await HiveStorage.importLocalToSheet();
+    if (r.ok) {
+      msg.textContent = `Done — ${r.added} moved, ${r.skipped} skipped (already there).`;
+      msg.className = "form-msg ok";
+      btn.textContent = "Moved ✓";
+    } else {
+      msg.textContent = r.msg;
+      msg.className = "form-msg error";
+      btn.disabled = false;
+    }
+  });
 }
 
 function renderHelp(body) {

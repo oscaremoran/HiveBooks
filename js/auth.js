@@ -1,13 +1,18 @@
 /* ============================================================
-   HiveBooks — authentication (signup / login)
-   Passwords are SHA-256 hashed before storage. This is better
-   than plaintext but NOT a substitute for a real backend.
+   HiveBooks — accounts and reading progress
+
+   Passwords are SHA-256 hashed before they ever leave the page.
+   That's better than plaintext, but it is NOT real security —
+   see the note at the top of storage.js.
+
+   Reads here are synchronous (served from the storage cache);
+   writes are saved in the background.
    ============================================================ */
 
 const HiveAuth = (() => {
-  const SESSION_KEY = "hivebooks_session_v1";
+  const SESSION_KEY = "hivebooks_session_v2";
 
-  /** Hash a password string with SHA-256 → hex. */
+  /** Hash a password with SHA-256 → hex. */
   async function hash(text) {
     const bytes = new TextEncoder().encode(text);
     const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -16,182 +21,159 @@ const HiveAuth = (() => {
       .join("");
   }
 
-  /** Create an account. Returns {ok, msg}. */
+  /** Remember who's signed in so a page reload keeps the session. */
+  function setSession(username, passHash) {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ username, passHash }));
+  }
+  function readSession() {
+    try { return JSON.parse(sessionStorage.getItem(SESSION_KEY)); } catch { return null; }
+  }
+
   async function createAccount(username, password) {
     username = username.trim();
     if (!username || !password) return { ok: false, msg: "Enter a username and password." };
-
-    const accounts = HiveStorage.getAccounts();
-    if (accounts[username]) return { ok: false, msg: "That username is already in the hive." };
-
-    accounts[username] = { passHash: await hash(password), finished: [], wantToRead: [], ratings: {}, nectar: 0 };
-    HiveStorage.saveAccounts(accounts);
-    setSession(username);
-    return { ok: true, msg: "Welcome to the hive!" };
+    const passHash = await hash(password);
+    const r = await HiveStorage.signup(username, passHash);
+    if (r.ok) setSession(username, passHash);
+    return { ok: r.ok, msg: r.ok ? "Welcome to the hive!" : r.msg };
   }
 
-  /** Log in. Returns {ok, msg}. */
   async function login(username, password) {
     username = username.trim();
     if (!username || !password) return { ok: false, msg: "Enter a username and password." };
-
-    const accounts = HiveStorage.getAccounts();
-    const user = accounts[username];
-    if (!user) return { ok: false, msg: "No such bee. Try creating an account." };
-    if (user.passHash !== (await hash(password))) return { ok: false, msg: "Wrong password." };
-
-    setSession(username);
-    return { ok: true, msg: "Welcome back!" };
+    const passHash = await hash(password);
+    const r = await HiveStorage.login(username, passHash);
+    if (r.ok) setSession(username, passHash);
+    return { ok: r.ok, msg: r.ok ? "Welcome back!" : r.msg };
   }
 
-  /** Change the logged-in user's username. Requires the current password. */
+  /** Restore a session after a page reload. Returns true if signed in. */
+  async function restore() {
+    const s = readSession();
+    if (!s || !s.username) return false;
+    const r = await HiveStorage.login(s.username, s.passHash);
+    if (!r.ok) { logout(); return false; }
+    return true;
+  }
+
+  function logout() {
+    sessionStorage.removeItem(SESSION_KEY);
+    HiveStorage.clearSession();
+  }
+
+  const currentUser = () => HiveStorage.getUsername();
+
   async function changeUsername(newName, currentPassword) {
     newName = newName.trim();
-    const u = currentUser();
-    if (!u) return { ok: false, msg: "You are not logged in." };
+    if (!currentUser()) return { ok: false, msg: "You are not logged in." };
     if (!newName) return { ok: false, msg: "Enter a new username." };
-    if (newName === u) return { ok: false, msg: "That's already your username." };
+    if (newName === currentUser()) return { ok: false, msg: "That's already your username." };
 
-    const accounts = HiveStorage.getAccounts();
-    if (accounts[newName]) return { ok: false, msg: "That username is already in the hive." };
-    if (accounts[u].passHash !== (await hash(currentPassword)))
-      return { ok: false, msg: "Current password is incorrect." };
-
-    accounts[newName] = accounts[u];
-    delete accounts[u];
-    HiveStorage.saveAccounts(accounts);
-    setSession(newName);
-    return { ok: true, msg: "Username updated!" };
+    const r = await HiveStorage.rename(newName, await hash(currentPassword));
+    if (r.ok) {
+      setSession(newName, HiveStorage.getPassHash());
+      return { ok: true, msg: "Username updated!" };
+    }
+    return r;
   }
 
-  /** Change the logged-in user's password. Requires the current password. */
   async function changePassword(newPassword, currentPassword) {
-    const u = currentUser();
-    if (!u) return { ok: false, msg: "You are not logged in." };
+    if (!currentUser()) return { ok: false, msg: "You are not logged in." };
     if (!newPassword) return { ok: false, msg: "Enter a new password." };
 
-    const accounts = HiveStorage.getAccounts();
-    if (accounts[u].passHash !== (await hash(currentPassword)))
-      return { ok: false, msg: "Current password is incorrect." };
-
-    accounts[u].passHash = await hash(newPassword);
-    HiveStorage.saveAccounts(accounts);
-    return { ok: true, msg: "Password updated!" };
+    const newHash = await hash(newPassword);
+    const r = await HiveStorage.changePass(await hash(currentPassword), newHash);
+    if (r.ok) {
+      setSession(currentUser(), newHash);
+      return { ok: true, msg: "Password updated!" };
+    }
+    return r;
   }
 
-  /** Permanently delete the logged-in account. Requires the current password. */
   async function deleteAccount(currentPassword) {
-    const u = currentUser();
-    if (!u) return { ok: false, msg: "You are not logged in." };
-
-    const accounts = HiveStorage.getAccounts();
-    if (accounts[u].passHash !== (await hash(currentPassword)))
-      return { ok: false, msg: "Current password is incorrect." };
-
-    delete accounts[u];
-    HiveStorage.saveAccounts(accounts);
-    logout();
-    return { ok: true, msg: "Account deleted." };
+    if (!currentUser()) return { ok: false, msg: "You are not logged in." };
+    const r = await HiveStorage.remove(await hash(currentPassword));
+    if (r.ok) {
+      sessionStorage.removeItem(SESSION_KEY);
+      return { ok: true, msg: "Account deleted." };
+    }
+    return r;
   }
 
-  function setSession(username) { sessionStorage.setItem(SESSION_KEY, username); }
-  function currentUser() { return sessionStorage.getItem(SESSION_KEY); }
-  function logout() { sessionStorage.removeItem(SESSION_KEY); }
+  /* ------------- reading progress (sync reads) ------------- */
 
-  // ---- Reading progress: finished books, ratings, and Nectar ----
-
-  /** Internal: get {accounts, rec} for the logged-in user, or null. */
-  function _rec() {
-    const u = currentUser();
-    if (!u) return null;
-    const accounts = HiveStorage.getAccounts();
-    const rec = accounts[u];
-    if (!rec) return null;
-    rec.finished = rec.finished || [];
-    rec.wantToRead = rec.wantToRead || [];
-    rec.ratings = rec.ratings || {};
-    rec.nectar = rec.nectar || 0;
-    return { accounts, rec };
-  }
-
-  function isWanted(bookId) {
-    const c = _rec();
-    return c ? c.rec.wantToRead.includes(bookId) : false;
-  }
-
-  /** Add/remove a book from the Want to Read list. Returns the new state. */
-  function toggleWantToRead(bookId) {
-    const c = _rec();
-    if (!c) return false;
-    const idx = c.rec.wantToRead.indexOf(bookId);
-    if (idx >= 0) c.rec.wantToRead.splice(idx, 1);
-    else c.rec.wantToRead.push(bookId);
-    HiveStorage.saveAccounts(c.accounts);
-    return c.rec.wantToRead.includes(bookId);
-  }
-
-  function getWantToReadCount() {
-    const c = _rec();
-    return c ? c.rec.wantToRead.length : 0;
-  }
+  const data = () => HiveStorage.getData();
 
   function isFinished(bookId) {
-    const c = _rec();
-    return c ? c.rec.finished.includes(bookId) : false;
+    const d = data();
+    return d ? d.finished.includes(bookId) : false;
   }
 
-  /** Mark a book finished, awarding Nectar once. Also drops it from the
-      Want to Read list — you've read it now. Returns the new total. */
+  /** Mark finished, awarding Nectar once and clearing it from Want to Read. */
   function markFinished(bookId, nectarAmount) {
-    const c = _rec();
-    if (!c) return { nectar: 0, already: true };
-    if (c.rec.finished.includes(bookId)) return { nectar: c.rec.nectar, already: true };
-    c.rec.finished.push(bookId);
-    c.rec.nectar += nectarAmount;
-    const w = c.rec.wantToRead.indexOf(bookId);
-    if (w >= 0) c.rec.wantToRead.splice(w, 1);
-    HiveStorage.saveAccounts(c.accounts);
-    return { nectar: c.rec.nectar, already: false };
+    const d = data();
+    if (!d) return { nectar: 0, already: true };
+    if (d.finished.includes(bookId)) return { nectar: d.nectar, already: true };
+    d.finished.push(bookId);
+    d.nectar += nectarAmount;
+    const w = d.wantToRead.indexOf(bookId);
+    if (w >= 0) d.wantToRead.splice(w, 1);
+    HiveStorage.persist();
+    return { nectar: d.nectar, already: false };
   }
 
-  /** Undo a finished mark: removes the Nectar it awarded and drops any
-      rating, since only finished books can be rated. */
+  /** Undo a finish: removes the Nectar and drops any rating. */
   function unmarkFinished(bookId, nectarAmount) {
-    const c = _rec();
-    if (!c) return { nectar: 0 };
-    const idx = c.rec.finished.indexOf(bookId);
-    if (idx >= 0) {
-      c.rec.finished.splice(idx, 1);
-      c.rec.nectar = Math.max(0, c.rec.nectar - nectarAmount);
+    const d = data();
+    if (!d) return { nectar: 0 };
+    const i = d.finished.indexOf(bookId);
+    if (i >= 0) {
+      d.finished.splice(i, 1);
+      d.nectar = Math.max(0, d.nectar - nectarAmount);
     }
-    delete c.rec.ratings[bookId];
-    HiveStorage.saveAccounts(c.accounts);
-    return { nectar: c.rec.nectar };
+    if (d.ratings[bookId] != null) {
+      HiveStorage.bumpScore(bookId, d.ratings[bookId], null);
+      delete d.ratings[bookId];
+    }
+    HiveStorage.persist();
+    return { nectar: d.nectar };
   }
 
-  function getUserRating(bookId) {
-    const c = _rec();
-    return c ? (c.rec.ratings[bookId] ?? null) : null;
+  const isWanted = (bookId) => {
+    const d = data();
+    return d ? d.wantToRead.includes(bookId) : false;
+  };
+
+  function toggleWantToRead(bookId) {
+    const d = data();
+    if (!d) return false;
+    const i = d.wantToRead.indexOf(bookId);
+    if (i >= 0) d.wantToRead.splice(i, 1);
+    else d.wantToRead.push(bookId);
+    HiveStorage.persist();
+    return d.wantToRead.includes(bookId);
   }
+
+  const getUserRating = (bookId) => {
+    const d = data();
+    return d ? (d.ratings[bookId] ?? null) : null;
+  };
 
   function rateBook(bookId, score) {
-    const c = _rec();
-    if (!c) return;
-    c.rec.ratings[bookId] = score;
-    HiveStorage.saveAccounts(c.accounts);
+    const d = data();
+    if (!d) return;
+    HiveStorage.bumpScore(bookId, d.ratings[bookId] ?? null, score);
+    d.ratings[bookId] = score;
+    HiveStorage.persist();
   }
 
-  function getNectar() {
-    const c = _rec();
-    return c ? c.rec.nectar : 0;
-  }
+  const getNectar = () => (data() ? data().nectar : 0);
+  const getFinishedCount = () => (data() ? data().finished.length : 0);
+  const getWantToReadCount = () => (data() ? data().wantToRead.length : 0);
 
-  function getFinishedCount() {
-    const c = _rec();
-    return c ? c.rec.finished.length : 0;
-  }
-
-  return { createAccount, login, logout, currentUser, changeUsername, changePassword, deleteAccount,
-           isFinished, markFinished, unmarkFinished, getUserRating, rateBook, getNectar, getFinishedCount,
-           isWanted, toggleWantToRead, getWantToReadCount };
+  return { createAccount, login, logout, restore, currentUser,
+           changeUsername, changePassword, deleteAccount,
+           isFinished, markFinished, unmarkFinished,
+           isWanted, toggleWantToRead,
+           getUserRating, rateBook, getNectar, getFinishedCount, getWantToReadCount };
 })();
